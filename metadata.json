@@ -1,0 +1,7 @@
+{
+  "name": "Arabic Dictate Pro",
+  "description": "A professional Arabic speech-to-text application powered by Gemini Live, featuring smart punctuation, RTL support, and high-accuracy transcriptions.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
