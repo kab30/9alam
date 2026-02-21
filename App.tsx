@@ -27,14 +27,28 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(false);
   const [customApiKey, setCustomApiKey] = useState<string>(localStorage.getItem('custom_gemini_api_key') || '');
+  const [micPermission, setMicPermission] = useState<'prompt' | 'granted' | 'denied'>('prompt');
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const sessionRef = useRef<any>(null);
   const currentDraftRef = useRef<string>('');
 
+  const checkMicPermission = async () => {
+    try {
+      const result = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+      setMicPermission(result.state as any);
+      result.onchange = () => {
+        setMicPermission(result.state as any);
+      };
+    } catch (e) {
+      console.warn('Permissions API not supported');
+    }
+  };
+
   useEffect(() => {
     if (!isAuthenticated) return;
+    checkMicPermission();
     const checkApiKey = async () => {
       if (window.aistudio) {
         const hasKey = await window.aistudio.hasSelectedApiKey();
@@ -195,10 +209,15 @@ const App: React.FC = () => {
 
     } catch (err: any) {
       console.error(err);
-      setError('تعذر الوصول إلى الميكروفون. تأكد من منح الإذن للمتصفح.');
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setError('تم رفض الوصول للميكروفون. يرجى تفعيل الإذن من إعدادات المتصفح.');
+        setMicPermission('denied');
+      } else {
+        setError('تعذر الوصول إلى الميكروفون. تأكد من توصيله ومنح الإذن.');
+      }
       setStatus(ConnectionStatus.DISCONNECTED);
     }
-  }, [handleMessage, stopTranscription]);
+  }, [handleMessage, stopTranscription, customApiKey]);
 
   const toggleMic = () => {
     if (status === ConnectionStatus.CONNECTED) {
@@ -238,9 +257,32 @@ const App: React.FC = () => {
           {/* تم تكبير الحاوية إلى max-w-screen-2xl لجعل الصندوق أكبر بكثير */}
           <div className="max-w-screen-2xl mx-auto h-full flex flex-col space-y-6">
             {error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-6 py-4 rounded-2xl flex items-center gap-3 shadow-sm">
-                <AlertCircle className="w-6 h-6 flex-shrink-0" />
-                <span className="font-semibold">{error}</span>
+              <div className="bg-red-50 border border-red-200 text-red-700 px-6 py-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-sm animate-in slide-in-from-top duration-300">
+                <div className="flex items-center gap-3">
+                  <AlertCircle className="w-6 h-6 flex-shrink-0" />
+                  <span className="font-semibold">{error}</span>
+                </div>
+                <button 
+                  onClick={startTranscription}
+                  className="px-6 py-2 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition-all shadow-lg active:scale-95 whitespace-nowrap"
+                >
+                  إعادة المحاولة / تفعيل المايك
+                </button>
+              </div>
+            )}
+
+            {micPermission === 'denied' && !error && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-700 px-6 py-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <MicOff className="w-6 h-6 flex-shrink-0" />
+                  <span className="font-semibold">الميكروفون محظور حالياً. يرجى تفعيله من شريط العنوان في المتصفح.</span>
+                </div>
+                <button 
+                  onClick={startTranscription}
+                  className="px-6 py-2 bg-amber-600 text-white rounded-xl font-bold hover:bg-amber-700 transition-all shadow-lg active:scale-95 whitespace-nowrap"
+                >
+                  طلب الإذن مجدداً
+                </button>
               </div>
             )}
             
