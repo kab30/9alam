@@ -261,6 +261,12 @@ const App: React.FC = () => {
 
   const startTranscription = useCallback(async () => {
     try {
+      // التحقق من أن الموقع يعمل عبر HTTPS
+      if (!window.isSecureContext) {
+        setError('عذراً، الميكروفون يتطلب اتصالاً آمناً (HTTPS). يرجى تفعيل شهادة الأمان للموقع.');
+        return;
+      }
+
       // التحقق من وجود مفتاح API
       const hasPlatformKey = window.aistudio ? await window.aistudio.hasSelectedApiKey() : false;
       const effectiveApiKey = customApiKey || process.env.API_KEY || '';
