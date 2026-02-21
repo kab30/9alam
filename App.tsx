@@ -6,7 +6,8 @@ import { createBlob } from './utils/audio-utils';
 import Sidebar from './components/Sidebar';
 import Editor from './components/Editor';
 import Header from './components/Header';
-import { Mic, MicOff, Trash2, Copy, AlertCircle, Type, X, Key, ExternalLink, CheckCircle2, Settings, Lock, LogIn, ShieldCheck } from 'lucide-react';
+import { Mic, MicOff, Trash2, Copy, AlertCircle, Type, X, Key, ExternalLink, CheckCircle2, Settings, Lock, LogIn, ShieldCheck, Save, FileText as FileIcon } from 'lucide-react';
+import { supabase, Document } from './utils/supabase';
 
 declare global {
   interface Window {
@@ -27,7 +28,12 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(false);
   const [customApiKey, setCustomApiKey] = useState<string>(localStorage.getItem('custom_gemini_api_key') || '');
+  const [dbApiKeys, setDbApiKeys] = useState<any[]>([]);
   const [micPermission, setMicPermission] = useState<'prompt' | 'granted' | 'denied'>('prompt');
+  const [isSaving, setIsSaving] = useState(false);
+  const [docTitle, setDocTitle] = useState('مستند جديد');
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [activeDocId, setActiveDocId] = useState<string | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -49,6 +55,8 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!isAuthenticated) return;
     checkMicPermission();
+    fetchDocuments();
+    fetchDbApiKeys();
     const checkApiKey = async () => {
       if (window.aistudio) {
         const hasKey = await window.aistudio.hasSelectedApiKey();
@@ -71,6 +79,118 @@ const App: React.FC = () => {
     setIsAuthenticated(false);
     sessionStorage.removeItem('is_auth');
     stopTranscription();
+  };
+
+  const fetchDbApiKeys = async () => {
+    const { data, error } = await supabase
+      .from('api_keys')
+      .select('*')
+      .order('created_at', { ascending: false });
+    
+    if (data) {
+      setDbApiKeys(data);
+      // إذا كان هناك مفتاح نشط ولم يتم تعيين مفتاح مخصص يدوياً في هذه الجلسة
+      const activeKey = data.find(k => k.is_active);
+      if (activeKey && !customApiKey) {
+        setCustomApiKey(activeKey.key_value);
+      }
+    }
+    if (error) console.error('Error fetching API keys:', error);
+  };
+
+  const fetchDocuments = async () => {
+    const { data, error } = await supabase
+      .from('documents')
+      .select('*')
+      .order('updated_at', { ascending: false });
+    
+    if (data) setDocuments(data);
+    if (error) console.error('Error fetching docs:', error);
+  };
+
+  const saveApiKeyToDb = async (key: string, label: string) => {
+    try {
+      // أولاً، اجعل كل المفاتيح الأخرى غير نشطة
+      await supabase.from('api_keys').update({ is_active: false }).neq('id', '00000000-0000-0000-0000-000000000000');
+      
+      const { error } = await supabase
+        .from('api_keys')
+        .insert([{ key_value: key, label: label, is_active: true }]);
+      
+      if (error) throw error;
+      fetchDbApiKeys();
+      setCustomApiKey(key);
+      localStorage.setItem('custom_gemini_api_key', key);
+    } catch (err: any) {
+      alert('خطأ في حفظ المفتاح: ' + err.message);
+    }
+  };
+
+  const deleteApiKey = async (id: string) => {
+    const { error } = await supabase.from('api_keys').delete().eq('id', id);
+    if (error) alert('خطأ في الحذف');
+    else fetchDbApiKeys();
+  };
+
+  const toggleApiKeyActive = async (id: string, currentStatus: boolean) => {
+    await supabase.from('api_keys').update({ is_active: false }).neq('id', '00000000-0000-0000-0000-000000000000');
+    await supabase.from('api_keys').update({ is_active: !currentStatus }).eq('id', id);
+    fetchDbApiKeys();
+  };
+
+  const saveDocument = async () => {
+    if (!fullText.trim()) return;
+    setIsSaving(true);
+    try {
+      if (activeDocId) {
+        // تحديث مستند موجود
+        const { error } = await supabase
+          .from('documents')
+          .update({ 
+            title: docTitle || 'مستند بدون عنوان', 
+            content: fullText,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', activeDocId);
+        
+        if (error) throw error;
+      } else {
+        // إنشاء مستند جديد
+        const { data, error } = await supabase
+          .from('documents')
+          .insert([
+            { 
+              title: docTitle || 'مستند بدون عنوان', 
+              content: fullText,
+              user_id: 'default-user'
+            }
+          ])
+          .select();
+        
+        if (error) throw error;
+        if (data && data[0]) setActiveDocId(data[0].id);
+      }
+      
+      alert('تم حفظ المستند بنجاح');
+      fetchDocuments();
+    } catch (err: any) {
+      console.error('Save error:', err);
+      alert('خطأ أثناء الحفظ: ' + err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSelectDocument = (doc: Document) => {
+    setFullText(doc.content);
+    setDocTitle(doc.title);
+    setActiveDocId(doc.id);
+  };
+
+  const createNewDocument = () => {
+    setFullText('');
+    setDocTitle('مستند جديد');
+    setActiveDocId(null);
   };
 
   const handleSelectKey = async () => {
@@ -250,6 +370,8 @@ const App: React.FC = () => {
       <Sidebar 
         onSettingsClick={() => setIsSettingsOpen(true)} 
         onLogout={handleLogout}
+        documents={documents}
+        onSelectDocument={handleSelectDocument}
       />
       <div className="flex-1 flex flex-col h-full relative">
         <Header />
@@ -288,6 +410,28 @@ const App: React.FC = () => {
             
             {/* واجهة الكتابة المحسنة */}
             <div className="flex-1 bg-white rounded-[2rem] shadow-2xl border border-gray-100 overflow-hidden flex flex-col transition-all duration-500">
+              <div className="px-8 py-4 border-b border-gray-50 flex items-center justify-between bg-gray-50/30">
+                <input 
+                  value={docTitle}
+                  onChange={(e) => setDocTitle(e.target.value)}
+                  className="bg-transparent border-none outline-none font-bold text-gray-700 text-lg w-full"
+                  placeholder="عنوان المستند..."
+                />
+                <button 
+                  onClick={createNewDocument}
+                  className="px-4 py-2 text-blue-600 font-bold hover:bg-blue-50 rounded-xl transition-all ml-2"
+                >
+                  + جديد
+                </button>
+                <button 
+                  onClick={saveDocument}
+                  disabled={isSaving || !fullText.trim()}
+                  className="flex items-center gap-2 px-6 py-2 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-100"
+                >
+                  <Save className="w-4 h-4" />
+                  {isSaving ? 'جاري الحفظ...' : activeDocId ? 'تحديث المستند' : 'حفظ المستند'}
+                </button>
+              </div>
               <Editor 
                 text={fullText} 
                 draft={currentDraft} 
@@ -375,6 +519,10 @@ const App: React.FC = () => {
         onSelectKey={handleSelectKey}
         customKey={customApiKey}
         onSaveCustomKey={handleSaveCustomKey}
+        dbKeys={dbApiKeys}
+        onSaveToDb={saveApiKeyToDb}
+        onDeleteKey={deleteApiKey}
+        onToggleActive={toggleApiKeyActive}
       />
     </div>
   );
@@ -388,12 +536,26 @@ const SettingsModal: React.FC<{
   onSelectKey: () => void;
   customKey: string;
   onSaveCustomKey: (key: string) => void;
-}> = ({ isOpen, onClose, hasApiKey, onSelectKey, customKey, onSaveCustomKey }) => {
+  dbKeys: any[];
+  onSaveToDb: (key: string, label: string) => void;
+  onDeleteKey: (id: string) => void;
+  onToggleActive: (id: string, status: boolean) => void;
+}> = ({ isOpen, onClose, hasApiKey, onSelectKey, customKey, onSaveCustomKey, dbKeys, onSaveToDb, onDeleteKey, onToggleActive }) => {
+  const [newKey, setNewKey] = useState('');
+  const [newLabel, setNewLabel] = useState('مفتاح جديد');
+
   if (!isOpen) return null;
+
+  const handleAddKey = () => {
+    if (!newKey) return;
+    onSaveToDb(newKey, newLabel);
+    setNewKey('');
+    setNewLabel('مفتاح جديد');
+  };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
-      <div className="bg-white w-full max-w-xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-300">
+      <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-300">
         <div className="p-8 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
           <div className="flex items-center gap-4">
             <div className="p-3 bg-blue-100 rounded-2xl text-blue-600">
@@ -438,42 +600,74 @@ const SettingsModal: React.FC<{
                   {hasApiKey ? 'تغيير المفتاح' : 'اختيار مفتاح'}
                 </button>
               </div>
-              <p className="text-sm text-gray-500 leading-relaxed">
-                هذا الخيار يستخدم نظام إدارة المفاتيح المدمج في AI Studio. تأكد من تفعيل الفوترة في مشروع Google Cloud الخاص بك.
-                <a 
-                  href="https://ai.google.dev/gemini-api/docs/billing" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:underline inline-flex items-center gap-1 mr-1"
-                >
-                  دليل الفوترة <ExternalLink className="w-3 h-3" />
-                </a>
-              </p>
             </div>
           </section>
 
           <div className="relative py-2">
             <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-gray-100"></span></div>
-            <div className="relative flex justify-center text-xs uppercase"><span className="bg-white px-4 text-gray-400 font-bold">أو استخدم مفتاحاً مخصصاً</span></div>
+            <div className="relative flex justify-center text-xs uppercase"><span className="bg-white px-4 text-gray-400 font-bold">إدارة المفاتيح في قاعدة البيانات</span></div>
           </div>
 
-          {/* قسم المفتاح المخصص */}
-          <section className="space-y-4">
-            <div className="flex items-center gap-2 text-gray-700 font-bold text-lg">
-              <Key className="w-5 h-5" />
-              <h3>مفتاح API يدوي</h3>
-            </div>
-            <div className="space-y-3">
+          {/* إضافة مفتاح جديد */}
+          <section className="space-y-4 bg-gray-50 p-6 rounded-3xl border border-gray-100">
+            <h3 className="font-bold text-gray-700">إضافة مفتاح جديد للقاعدة</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <input
+                type="text"
+                value={newLabel}
+                onChange={(e) => setNewLabel(e.target.value)}
+                placeholder="تسمية المفتاح (مثلاً: مفتاح العمل)"
+                className="px-4 py-3 bg-white border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100"
+              />
               <input
                 type="password"
-                value={customKey}
-                onChange={(e) => onSaveCustomKey(e.target.value)}
-                placeholder="أدخل مفتاح Gemini API هنا..."
-                className="w-full px-6 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-4 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all font-mono"
+                value={newKey}
+                onChange={(e) => setNewKey(e.target.value)}
+                placeholder="مفتاح API..."
+                className="px-4 py-3 bg-white border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100"
               />
-              <p className="text-xs text-gray-400 px-2">
-                سيتم حفظ هذا المفتاح محلياً في متصفحك فقط.
-              </p>
+            </div>
+            <button 
+              onClick={handleAddKey}
+              className="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all"
+            >
+              إضافة وحفظ في القاعدة
+            </button>
+          </section>
+
+          {/* قائمة المفاتيح من القاعدة */}
+          <section className="space-y-4">
+            <h3 className="font-bold text-gray-700 px-2">المفاتيح المحفوظة</h3>
+            <div className="space-y-3">
+              {dbKeys.length === 0 ? (
+                <p className="text-center text-gray-400 py-4 italic">لا توجد مفاتيح محفوظة في القاعدة</p>
+              ) : (
+                dbKeys.map((k) => (
+                  <div key={k.id} className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${k.is_active ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-gray-100'}`}>
+                    <div className="flex items-center gap-3">
+                      <div className={`w-3 h-3 rounded-full ${k.is_active ? 'bg-emerald-500 animate-pulse' : 'bg-gray-300'}`}></div>
+                      <div>
+                        <p className="font-bold text-gray-800">{k.label}</p>
+                        <p className="text-xs text-gray-400 font-mono">••••••••{k.key_value.slice(-4)}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => onToggleActive(k.id, k.is_active)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${k.is_active ? 'bg-emerald-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                      >
+                        {k.is_active ? 'نشط' : 'تفعيل'}
+                      </button>
+                      <button 
+                        onClick={() => onDeleteKey(k.id)}
+                        className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </section>
         </div>
@@ -483,7 +677,7 @@ const SettingsModal: React.FC<{
             onClick={onClose}
             className="px-10 py-3 bg-gray-900 text-white rounded-2xl font-bold hover:bg-black transition-all shadow-xl active:scale-95"
           >
-            حفظ وإغلاق
+            إغلاق
           </button>
         </div>
       </div>
